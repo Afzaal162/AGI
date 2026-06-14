@@ -1,5 +1,6 @@
 import express from "express";
-import { getAllProject, getProjectById, getUserCredits, toggleProjectPublic } from "../controllers/userController";
+import { getAllProject, getProjectById, getUserCredits, toggleProjectPublic } 
+from "../controllers/userController";
 import { protect } from "../middleware/auth";
 
 

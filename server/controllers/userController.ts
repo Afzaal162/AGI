@@ -43,7 +43,7 @@ const projects = await prisma.project.findMany({
 res.json({projects})
     } catch (error: any) {
         Sentry.captureException(error);
-        res.status(500).res.json({ message: error.code || error.message })
+        res.status(500).json({ message: error.code || error.message })
     }
 }
 export const getProjectById = async (req: Request, res: Response): Promise<any> => {
@@ -85,6 +85,6 @@ await prisma.project.update({
 res.json({isPublished: !projects.isPublished})
     } catch (error: any) {
         Sentry.captureException(error);
-        res.status(500).res.json({ message: error.code || error.message })
+        res.status(500).json({ message: error.code || error.message })
     }
 }
