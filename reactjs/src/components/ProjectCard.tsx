@@ -1,14 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { Project } from '../types'
-import { useNavigate } from 'react-router-dom'
 import { Loader2Icon, Download, MoreVertical, Trash2, Share2 } from 'lucide-react'
 
-const ProjectCard = ({ gen, setGenerations, forCommunity = false }: {
+const ProjectCard = ({ gen, setGenerations, forCommunity: _forCommunity = false }
+: {
     gen: Project,
     setGenerations: React.Dispatch<React.SetStateAction<Project[]>>,
     forCommunity?: boolean
 }) => {
-    const navigate = useNavigate()
     const [menuOpen, setMenuOpen] = useState(false)
     const menuRef = useRef<HTMLDivElement>(null)
 
