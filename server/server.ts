@@ -6,6 +6,7 @@ import clerkWebHooks from "./controllers/clerk";
 import * as Sentry from '@sentry/node'
 import userRouter from "./routes/userRoute";
 import projectRoute from "./routes/projectRoute";
+import './config/instrument'
 
 const app = express();
 
