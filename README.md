@@ -226,7 +226,7 @@ Deployed on **Vercel** with automatic CI/CD from GitHub:
 
 | Service | URL |
 |---------|-----|
-| 🎨 Frontend | `https://your-app.vercel.app` |
+| 🎨 Frontend | `(https://agi-xo58.vercel.app)` |
 | ⚙️ Backend | `https://agi-eta-beige.vercel.app` |
 
 ---
