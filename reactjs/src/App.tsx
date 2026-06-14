@@ -10,7 +10,7 @@ import MyGeneration from './pages/MyGeneration';
 import { Community } from './pages/Community';
 import Plans from './pages/Plans';
 import Loading from './pages/Loading';
-import { toast, Toaster } from 'react-hot-toast'
+import { Toaster } from 'react-hot-toast'
 
 function App() {
 	return (
