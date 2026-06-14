@@ -1,7 +1,5 @@
 import { PricingTable } from '@clerk/clerk-react';
 import Title from './Title';
-import { useRef } from 'react';
-
 export default function Pricing() {
     return (
         <section id="pricing" className="py-20 bg-white/3 border-t border-white/6">
