@@ -7,17 +7,13 @@ import path from "path";
 import axios from "axios";
 import ai from "../config/ai";
 import FormData from 'form-data';
-
-// ✅ Fix
-interface AuthenticatedRequest extends Request {
-    auth: () => { userId: string; has: (permission: any) => boolean };
-}
+import { getAuth } from "@clerk/express";
 
 // Helper function to convert local Multer files into Gemini inline data objects
-const fileToGenerativePart = (path: string, mimeType: string) => {
+const fileToGenerativePart = (filePath: string, mimeType: string) => {
     return {
         inlineData: {
-            data: fs.readFileSync(path).toString('base64'),
+            data: fs.readFileSync(filePath).toString('base64'),
             mimeType
         }
     };
@@ -27,8 +23,9 @@ const fileToGenerativePart = (path: string, mimeType: string) => {
    1. CREATE PROJECT (IMAGE GENERATION)
    ========================================================================== */
 export const createProject = async (req: Request, res: Response): Promise<any> => {
-    const authReq = req as AuthenticatedRequest;
-    const { userId } = authReq.auth();
+    const { userId } = getAuth(req);
+
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
 
     let tempProjectId: string | undefined;
     let isCreditDeducted = false;
@@ -61,7 +58,6 @@ export const createProject = async (req: Request, res: Response): Promise<any> =
         });
         isCreditDeducted = true;
 
-        // Upload original images to Cloudinary for storage
         const uploadedImages = await Promise.all(
             images.map(async (file) => {
                 const result = await cloudinary.uploader.upload(file.path, {
@@ -87,11 +83,9 @@ export const createProject = async (req: Request, res: Response): Promise<any> =
 
         tempProjectId = project.id;
 
-        // ✅ Person = model image (index 1), Product = product image (index 0)
         const personFile = images[1];
         const productFile = images[0];
 
-        // ✅ Build FormData payload for Stability AI image-to-image
         const formPayload = new FormData();
 
         formPayload.append('init_image', fs.readFileSync(personFile.path), {
@@ -110,7 +104,6 @@ export const createProject = async (req: Request, res: Response): Promise<any> =
         formPayload.append('steps', '30');
         formPayload.append('image_strength', '0.40');
 
-        // ✅ Call Stability AI API
         const stabilityResponse = await axios.post(
             'https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/image-to-image',
             formPayload,
@@ -119,7 +112,8 @@ export const createProject = async (req: Request, res: Response): Promise<any> =
                     'Authorization': `Bearer ${process.env.STABILITY_API_KEY}`,
                     'Accept': 'application/json',
                     ...formPayload.getHeaders()
-                }
+                },
+                timeout: 120000
             }
         );
 
@@ -129,7 +123,6 @@ export const createProject = async (req: Request, res: Response): Promise<any> =
             throw new Error('No image returned from Stability AI');
         }
 
-        // ✅ Upload generated image to Cloudinary
         const base64Image = `data:image/png;base64,${stabilityData.artifacts[0].base64}`;
         const uploadResult = await cloudinary.uploader.upload(base64Image, { resource_type: 'image' });
 
@@ -153,14 +146,14 @@ export const createProject = async (req: Request, res: Response): Promise<any> =
             await prisma.project.update({
                 where: { id: tempProjectId },
                 data: { isGenerating: false, error: error.message }
-            }).catch(err => Sentry.captureException(err));
+            }).catch((err: any) => Sentry.captureException(err));
         }
 
         if (isCreditDeducted) {
             await prisma.user.update({
                 where: { id: userId },
                 data: { credits: { increment: 5 } }
-            }).catch(err => Sentry.captureException(err));
+            }).catch((err: any) => Sentry.captureException(err));
         }
 
         Sentry.captureException(error);
@@ -169,13 +162,14 @@ export const createProject = async (req: Request, res: Response): Promise<any> =
 };
 
 /* ==========================================================================
-   2. CREATE VIDEO (VEO GENERATION)
+   2. CREATE VIDEO (FAL.AI GENERATION)
    ========================================================================== */
 export const createVideo = async (req: Request, res: Response): Promise<any> => {
-    const authReq = req as AuthenticatedRequest;
-    const { userId } = authReq.auth();
-    const { projectId } = req.body;
+    const { userId } = getAuth(req);
 
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { projectId } = req.body;
     let isCreditDeducted = false;
 
     try {
@@ -199,16 +193,15 @@ export const createVideo = async (req: Request, res: Response): Promise<any> => 
             return res.status(400).json({ message: 'No image found' });
         }
 
-        // Deduct credits
         await prisma.user.update({ where: { id: userId }, data: { credits: { decrement: 10 } } });
         isCreditDeducted = true;
 
         await prisma.project.update({ where: { id: projectId }, data: { isGenerating: true } });
 
-        // ✅ Respond immediately — don't wait for video
+        // Respond immediately
         res.status(200).json({ message: 'Video generation started! Please wait...' });
 
-        // ✅ Process in background
+        // Process in background
         (async () => {
             try {
                 const { fal } = await import('@fal-ai/client');
@@ -270,6 +263,7 @@ export const createVideo = async (req: Request, res: Response): Promise<any> => 
         return res.status(500).json({ message: error.message });
     }
 };
+
 /* ==========================================================================
    3. UTILITY METHODS (GET / DELETE)
    ========================================================================== */
@@ -286,9 +280,12 @@ export const getAllProjectProjects = async (req: Request, res: Response): Promis
 };
 
 export const deleteProjects = async (req: Request, res: Response): Promise<any> => {
-    const authReq = req as AuthenticatedRequest;
-    const { userId } = authReq.auth();
-    const { projectId } = req.params;
+    const { userId } = getAuth(req);
+
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+
+    // ✅ FIX: Cast to string to avoid string | string[] error
+    const projectId = req.params.projectId as string;
 
     try {
         const project = await prisma.project.findUnique({
