@@ -1,5 +1,4 @@
 import "dotenv/config";
-import './config/instrument.mjs' // Sentry instrumentation must always stay at the absolute top
 import express, { Request, Response } from 'express';
 import cors from "cors";
 import { clerkMiddleware } from "@clerk/express";
