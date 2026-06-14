@@ -8,9 +8,9 @@ import axios from "axios";
 import ai from "../config/ai";
 import FormData from 'form-data';
 
-// Define custom interface for extended request if req.auth is from a middleware like Clerk
+// ✅ Fix
 interface AuthenticatedRequest extends Request {
-    auth: () => { userId: string };
+    auth: () => { userId: string; has: (permission: any) => boolean };
 }
 
 // Helper function to convert local Multer files into Gemini inline data objects
