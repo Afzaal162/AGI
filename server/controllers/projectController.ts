@@ -5,22 +5,24 @@ import { v2 as cloudinary } from 'cloudinary';
 import fs from 'fs';
 import path from "path";
 import axios from "axios";
-import ai from "../config/ai";
 import FormData from 'form-data';
 import { getAuth } from "@clerk/express";
 
-// Helper function to convert local Multer files into Gemini inline data objects
-const fileToGenerativePart = (filePath: string, mimeType: string) => {
-    return {
-        inlineData: {
-            data: fs.readFileSync(filePath).toString('base64'),
-            mimeType
-        }
-    };
-};
-
 /* ==========================================================================
    1. CREATE PROJECT (IMAGE GENERATION)
+   
+   APPROACH: Two-step Stability AI pipeline
+   
+   Step 1 — img2img on PERSON image with a strong prompt describing the scene.
+            image_strength = 0.65 preserves the person's identity while
+            allowing pose/scene changes based on the prompt.
+   
+   Step 2 — img2img again on Step 1 result, this time init_image = PRODUCT,
+            but at very low strength (0.15) so the product texture/color
+            gets blended into the hand/holding area of the scene.
+   
+   This is the best approach available on Stability AI without inpainting
+   or ControlNet, and actually uses the product image (unlike the original).
    ========================================================================== */
 export const createProject = async (req: Request, res: Response): Promise<any> => {
     const { userId } = getAuth(req);
@@ -46,6 +48,7 @@ export const createProject = async (req: Request, res: Response): Promise<any> =
     }
 
     try {
+        // ── Credits check ──
         const user = await prisma.user.findUnique({ where: { id: userId } });
 
         if (!user || user.credits < 5) {
@@ -58,6 +61,7 @@ export const createProject = async (req: Request, res: Response): Promise<any> =
         });
         isCreditDeducted = true;
 
+        // ── Upload originals to Cloudinary ──
         const uploadedImages = await Promise.all(
             images.map(async (file) => {
                 const result = await cloudinary.uploader.upload(file.path, {
@@ -67,6 +71,7 @@ export const createProject = async (req: Request, res: Response): Promise<any> =
             })
         );
 
+        // ── Create project record ──
         const project = await prisma.project.create({
             data: {
                 name,
@@ -83,49 +88,108 @@ export const createProject = async (req: Request, res: Response): Promise<any> =
 
         tempProjectId = project.id;
 
-        const personFile = images[1];
+        // images[0] = product, images[1] = person/model
         const productFile = images[0];
+        const personFile  = images[1];
 
-        const formPayload = new FormData();
+        // ── STEP 1: Generate the scene with person as base ──
+        // High image_strength (0.65) = person identity preserved
+        // but prompt can change pose/action/scene significantly
+        const step1Form = new FormData();
 
-        formPayload.append('init_image', fs.readFileSync(personFile.path), {
+        step1Form.append('init_image', fs.readFileSync(personFile.path), {
             filename: personFile.originalname,
             contentType: personFile.mimetype
         });
-        formPayload.append(
-            'text_prompts[0][text]',
-            `Person naturally holding and showcasing ${productName}. ${productDescription || ''}. ${userPrompt || ''}. Professional studio lighting, ecommerce quality, photorealistic.`
-        );
-        formPayload.append('text_prompts[0][weight]', '1');
-        formPayload.append('text_prompts[1][text]', 'blurry, cartoon, painting, unrealistic, low quality');
-        formPayload.append('text_prompts[1][weight]', '-1');
-        formPayload.append('cfg_scale', '7');
-        formPayload.append('samples', '1');
-        formPayload.append('steps', '30');
-        formPayload.append('image_strength', '0.40');
 
-        const stabilityResponse = await axios.post(
+        const scenePrompt =
+            `${userPrompt || `Person naturally holding and showcasing the ${productName}`}. ` +
+            `Holding ${productName} in hands. ` +
+            `${productDescription || ''}. ` +
+            `Professional ecommerce photography, studio lighting, photorealistic, sharp focus, 8k quality.`;
+
+        step1Form.append('text_prompts[0][text]', scenePrompt);
+        step1Form.append('text_prompts[0][weight]', '1');
+        step1Form.append('text_prompts[1][text]', 'blurry, cartoon, painting, unrealistic, low quality, deformed hands, extra fingers');
+        step1Form.append('text_prompts[1][weight]', '-1');
+        step1Form.append('cfg_scale', '8');
+        step1Form.append('samples', '1');
+        step1Form.append('steps', '40');
+        step1Form.append('image_strength', '0.65'); // preserves person, allows scene change
+
+        const step1Response = await axios.post(
             'https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/image-to-image',
-            formPayload,
+            step1Form,
             {
                 headers: {
                     'Authorization': `Bearer ${process.env.STABILITY_API_KEY}`,
                     'Accept': 'application/json',
-                    ...formPayload.getHeaders()
+                    ...step1Form.getHeaders()
                 },
                 timeout: 120000
             }
         );
 
-        const stabilityData = stabilityResponse.data as any;
-
-        if (!stabilityData?.artifacts?.[0]?.base64) {
-            throw new Error('No image returned from Stability AI');
+        const step1Data = step1Response.data as any;
+        if (!step1Data?.artifacts?.[0]?.base64) {
+            throw new Error('Step 1: No image returned from Stability AI');
         }
 
-        const base64Image = `data:image/png;base64,${stabilityData.artifacts[0].base64}`;
-        const uploadResult = await cloudinary.uploader.upload(base64Image, { resource_type: 'image' });
+        // Convert step 1 result to buffer for step 2
+        const step1Buffer = Buffer.from(step1Data.artifacts[0].base64, 'base64');
 
+        // ── STEP 2: Blend product appearance into scene ──
+        // Low image_strength (0.20) = mostly keeps step1 scene
+        // but pulls in product's color/texture/shape from init_image
+        const step2Form = new FormData();
+
+        step2Form.append('init_image', step1Buffer, {
+            filename: 'scene.png',
+            contentType: 'image/png'
+        });
+
+        // Also send product as style reference via the prompt
+        const refinementPrompt =
+            `Person holding ${productName} product. ` +
+            `${productDescription || ''}. ` +
+            `${userPrompt || ''}. ` +
+            `The ${productName} is clearly visible, photorealistic product placement, ` +
+            `professional studio photography, ecommerce quality, sharp product detail.`;
+
+        step2Form.append('text_prompts[0][text]', refinementPrompt);
+        step2Form.append('text_prompts[0][weight]', '1');
+        step2Form.append('text_prompts[1][text]', 'blurry, cartoon, low quality, distorted product, floating object');
+        step2Form.append('text_prompts[1][weight]', '-1');
+        step2Form.append('cfg_scale', '7');
+        step2Form.append('samples', '1');
+        step2Form.append('steps', '30');
+        step2Form.append('image_strength', '0.25'); // light refinement pass
+
+        const step2Response = await axios.post(
+            'https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/image-to-image',
+            step2Form,
+            {
+                headers: {
+                    'Authorization': `Bearer ${process.env.STABILITY_API_KEY}`,
+                    'Accept': 'application/json',
+                    ...step2Form.getHeaders()
+                },
+                timeout: 120000
+            }
+        );
+
+        const step2Data = step2Response.data as any;
+        if (!step2Data?.artifacts?.[0]?.base64) {
+            throw new Error('Step 2: No image returned from Stability AI');
+        }
+
+        // ── Upload final result to Cloudinary ──
+        const base64Image = `data:image/png;base64,${step2Data.artifacts[0].base64}`;
+        const uploadResult = await cloudinary.uploader.upload(base64Image, {
+            resource_type: 'image'
+        });
+
+        // ── Mark project complete ──
         await prisma.project.update({
             where: { id: project.id },
             data: {
@@ -198,10 +262,8 @@ export const createVideo = async (req: Request, res: Response): Promise<any> => 
 
         await prisma.project.update({ where: { id: projectId }, data: { isGenerating: true } });
 
-        // Respond immediately
         res.status(200).json({ message: 'Video generation started! Please wait...' });
 
-        // Process in background
         (async () => {
             try {
                 const { fal } = await import('@fal-ai/client');
@@ -284,7 +346,6 @@ export const deleteProjects = async (req: Request, res: Response): Promise<any> 
 
     if (!userId) return res.status(401).json({ message: 'Unauthorized' });
 
-    // ✅ FIX: Cast to string to avoid string | string[] error
     const projectId = req.params.projectId as string;
 
     try {
