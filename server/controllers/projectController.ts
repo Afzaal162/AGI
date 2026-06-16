@@ -329,7 +329,7 @@ export const createVideo = async (req: Request, res: Response): Promise<any> => 
 /* ==========================================================================
    3. UTILITY METHODS (GET / DELETE)
    ========================================================================== */
-export const getAllProjectProjects = async (req: Request, res: Response): Promise<any> => {
+export const getAllProject = async (req: Request, res: Response): Promise<any> => {
     try {
         const projects = await prisma.project.findMany({
             where: { isPublished: true }
